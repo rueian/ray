@@ -894,7 +894,7 @@ RAY_CONFIG(bool, kill_child_processes_on_worker_exit, true)
 RAY_CONFIG(bool, kill_child_processes_on_worker_exit_with_raylet_subreaper, false)
 
 // If autoscaler v2 is enabled.
-RAY_CONFIG(bool, enable_autoscaler_v2, false)
+RAY_CONFIG(bool, enable_autoscaler_v2, true)
 
 // Python GCS client number of reconnection retry and timeout.
 RAY_CONFIG(int64_t, nums_py_gcs_reconnect_retry, 5)
