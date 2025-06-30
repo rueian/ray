@@ -52,7 +52,7 @@ class RayInstaller(object):
             instance.instance_type
         )
         updater = NodeUpdater(
-            node_id=instance.instance_id,
+            node_id=instance.cloud_instance_id,
             provider_config=self._config.get_config("provider"),
             provider=self._provider,
             auth_config=self._config.get_config("auth"),
@@ -92,8 +92,14 @@ class RayInstaller(object):
             process_runner=self._process_runner,
         )
         try:
+            logger.info(
+                f"Installing ray on instance {instance.instance_id} with ray_start_commands {ray_start_commands}"
+            )
             updater.run()
-        except Exception:
+        except Exception as e:
+            logger.info(
+                f"Ray installation failed on instance {instance.instance_id}: {e}"
+            )
             # Errors has already been handled.
             return False
         return True

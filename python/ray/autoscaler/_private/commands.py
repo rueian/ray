@@ -57,6 +57,7 @@ from ray.autoscaler._private.util import (
     hash_runtime_conf,
     prepare_config,
     validate_config,
+    with_envs,
 )
 from ray.autoscaler.node_provider import NodeProvider
 from ray.autoscaler.tags import (
@@ -830,7 +831,17 @@ def get_or_create_head_node(
             file_mounts=config["file_mounts"],
             initialization_commands=config["initialization_commands"],
             setup_commands=setup_commands,
-            ray_start_commands=ray_start_commands,
+            ray_start_commands=with_envs(
+                ray_start_commands,
+                {
+                    # "RAY_HEAD_IP": head_node_ip,
+                    "RAY_enable_autoscaler_v2": "1",
+                    "RAY_AUTOSCALER_RECONCILE_ALLOCATE_STATUS_TIMEOUT_S": "3000",
+                    "RAY_CLOUD_INSTANCE_ID": head_node,
+                    "RAY_NODE_TYPE_NAME": head_node_type,
+                    # "RAY_CLOUD_INSTANCE_TYPE_NAME": provider_instance_type_name,
+                },
+            ),
             process_runner=_runner,
             runtime_hash=runtime_hash,
             file_mounts_contents_hash=file_mounts_contents_hash,

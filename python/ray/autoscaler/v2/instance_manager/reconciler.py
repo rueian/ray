@@ -5,7 +5,7 @@ import uuid
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
-from ray._common.utils import binary_to_hex
+from ray._private.utils import binary_to_hex
 from ray.autoscaler.v2.instance_manager.common import InstanceUtil
 from ray.autoscaler.v2.instance_manager.config import (
     AutoscalingConfig,
@@ -1076,16 +1076,163 @@ class Reconciler:
         # Get the current instance states.
         im_instances, version = Reconciler._get_im_instances(instance_manager)
 
-        im_instances_by_instance_id = {
-            i.instance_id: i for i in im_instances if i.instance_id
-        }
         autoscaler_instances = []
         ray_nodes_by_id = {
             binary_to_hex(node.node_id): node for node in ray_state.node_states
         }
-
+        # logger.info(f"ray_nodes_by_id: {ray_nodes_by_id}")
         for im_instance in im_instances:
+            # logger.info(f"im_instance: {im_instance}")
             ray_node = ray_nodes_by_id.get(im_instance.node_id)
+            # TODO
+            # 2025-06-29 23:17:44,468	INFO reconciler.py:1083 -- ray_nodes_by_id: {'3788c78cbce467efecda33b427a753ce4bb3d57b815212fc7d1951eb': node_id: "7\210\307\214\274\344g\357\354\3323\264\'\247S\316K\263\325{\201R\022\374}\031Q\353"
+            # ``instance_id: "i-030b6d234a19b8d55"
+            # ray_node_type_name: "ray.head.default"
+            # available_resources {
+            #   key: "CPU"
+            #   value: 2.0
+            # }
+            # available_resources {
+            #   key: "memory"
+            #   value: 4972375655.0
+            # }
+            # available_resources {
+            #   key: "node:10.0.40.119"
+            #   value: 1.0
+            # }
+            # available_resources {
+            #   key: "node:__internal_head__"
+            #   value: 1.0
+            # }
+            # available_resources {
+            #   key: "object_store_memory"
+            #   value: 2131018137.0
+            # }
+            # total_resources {
+            #   key: "CPU"
+            #   value: 2.0
+            # }
+            # total_resources {
+            #   key: "memory"
+            #   value: 4972375655.0
+            # }
+            # total_resources {
+            #   key: "node:10.0.40.119"
+            #   value: 1.0
+            # }
+            # total_resources {
+            #   key: "node:__internal_head__"
+            #   value: 1.0
+            # }
+            # total_resources {
+            #   key: "object_store_memory"
+            #   value: 2131018137.0
+            # }
+            # node_state_version: 85
+            # status: IDLE
+            # idle_duration_ms: 423017
+            # node_ip_address: "10.0.40.119"
+            # }
+            # 2025-06-29 23:17:44,468	INFO reconciler.py:1085 -- im_instance: instance_id: "1782e0c4-87e3-4c1e-9f9b-6f019f2fed4f"
+            # cloud_instance_id: "i-030b6d234a19b8d55"
+            # node_id: "3788c78cbce467efecda33b427a753ce4bb3d57b815212fc7d1951eb"
+            # status: RAY_RUNNING
+            # instance_type: "ray.head.default"
+            # version: 2
+            # status_history {
+            #   instance_status: ALLOCATED
+            #   timestamp_ns: 1751263836011787853
+            #   details: "allocated unmanaged cloud instance :i-030b6d234a19b8d55 (HEAD) from cloud provider"
+            # }
+            # status_history {
+            #   instance_status: RAY_RUNNING
+            #   timestamp_ns: 1751263846253776897
+            # }
+            # node_kind: HEAD
+
+            # 2025-06-29 23:17:44,468	INFO reconciler.py:1085 -- im_instance: instance_id: "262a036e-04f7-48e3-8e01-95c8008537a2"
+            # cloud_instance_id: "i-05b77e351df699f60"
+            # status: RAY_RUNNING
+            # instance_type: "ray.worker.default"
+            # version: 7
+            # status_history {
+            #   instance_status: QUEUED
+            #   timestamp_ns: 1751263846256294459
+            #   details: "queuing new instance of ray.worker.default from scheduler"
+            # }
+            # status_history {
+            #   instance_status: REQUESTED
+            #   timestamp_ns: 1751263846256774208
+            # }
+            # status_history {
+            #   instance_status: ALLOCATED
+            #   timestamp_ns: 1751263851443981211
+            # }
+            # launch_request_id: "9905054f-81ca-4fe5-a486-608c8a88d6aa"
+            # node_kind: WORKER
+
+            # 2025-06-29 23:17:44,469	ERROR autoscaler.py:210 -- ray node should not be None when the instance is running ray: instance=AutoscalerInstance(cloud_instance_id='i-05b77e351df699f60', ray_node=None, im_instance=instance_id: "262a036e-04f7-48e3-8e01-95c8008537a2"
+            # cloud_instance_id: "i-05b77e351df699f60"
+            # status: RAY_RUNNING
+            # instance_type: "ray.worker.default"
+            # version: 7
+            # status_history {
+            #   instance_status: QUEUED
+            #   timestamp_ns: 1751263846256294459
+            #   details: "queuing new instance of ray.worker.default from scheduler"
+            # }
+            # status_history {
+            #   instance_status: REQUESTED
+            #   timestamp_ns: 1751263846256774208
+            # }
+            # status_history {
+            #   instance_status: ALLOCATED
+            #   timestamp_ns: 1751263851443981211
+            # }
+            # launch_request_id: "9905054f-81ca-4fe5-a486-608c8a88d6aa"
+            # node_kind: WORKER
+            # )
+            # Traceback (most recent call last):
+            #   File "/home/ray/anaconda3/lib/python3.12/site-packages/ray/autoscaler/v2/autoscaler.py", line 195, in update_autoscaling_state
+            #     return Reconciler.reconcile(
+            #            ^^^^^^^^^^^^^^^^^^^^^
+            #   File "/home/ray/anaconda3/lib/python3.12/site-packages/ray/autoscaler/v2/instance_manager/reconciler.py", line 119, in reconcile
+            #     Reconciler._step_next(
+            #   File "/home/ray/anaconda3/lib/python3.12/site-packages/ray/autoscaler/v2/instance_manager/reconciler.py", line 274, in _step_next
+            #     Reconciler._scale_cluster(
+            #   File "/home/ray/anaconda3/lib/python3.12/site-packages/ray/autoscaler/v2/instance_manager/reconciler.py", line 1117, in _scale_cluster
+            #     reply = scheduler.schedule(sched_request)
+            #             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            #   File "/home/ray/anaconda3/lib/python3.12/site-packages/ray/autoscaler/v2/scheduler.py", line 844, in schedule
+            #     ctx = ResourceDemandScheduler.ScheduleContext.from_schedule_request(request)
+            #           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            #   File "/home/ray/anaconda3/lib/python3.12/site-packages/ray/autoscaler/v2/scheduler.py", line 705, in from_schedule_request
+            #     node = SchedulingNode.new(
+            #            ^^^^^^^^^^^^^^^^^^^
+            #   File "/home/ray/anaconda3/lib/python3.12/site-packages/ray/autoscaler/v2/scheduler.py", line 267, in new
+            #     assert instance.ray_node is not None, (
+            #            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            # AssertionError: ray node should not be None when the instance is running ray: instance=AutoscalerInstance(cloud_instance_id='i-05b77e351df699f60', ray_node=None, im_instance=instance_id: "262a036e-04f7-48e3-8e01-95c8008537a2"
+            # cloud_instance_id: "i-05b77e351df699f60"
+            # status: RAY_RUNNING
+            # instance_type: "ray.worker.default"
+            # version: 7
+            # status_history {
+            #   instance_status: QUEUED
+            #   timestamp_ns: 1751263846256294459
+            #   details: "queuing new instance of ray.worker.default from scheduler"
+            # }
+            # status_history {
+            #   instance_status: REQUESTED
+            #   timestamp_ns: 1751263846256774208
+            # }
+            # status_history {
+            #   instance_status: ALLOCATED
+            #   timestamp_ns: 1751263851443981211
+            # }
+            # launch_request_id: "9905054f-81ca-4fe5-a486-608c8a88d6aa"
+            # node_kind: WORKER
+            # )``
             autoscaler_instances.append(
                 AutoscalerInstance(
                     ray_node=ray_node,
@@ -1146,24 +1293,17 @@ class Reconciler:
         # Add terminating instances.
         for terminate_request in to_terminate:
             instance_id = terminate_request.instance_id
+            new_instance_status = IMInstance.RAY_STOP_REQUESTED
             if terminate_request.instance_status == IMInstance.ALLOCATED:
                 # The instance is not yet running, so we can't request to stop/drain Ray.
                 # Therefore, we can skip the RAY_STOP_REQUESTED state and directly terminate the node.
-                im_instance_to_terminate = im_instances_by_instance_id[instance_id]
-                updates[terminate_request.instance_id] = IMInstanceUpdateEvent(
-                    instance_id=instance_id,
-                    new_instance_status=IMInstance.TERMINATING,
-                    cloud_instance_id=im_instance_to_terminate.cloud_instance_id,
-                    termination_request=terminate_request,
-                    details=f"terminating ray: {terminate_request.details}",
-                )
-            else:
-                updates[terminate_request.instance_id] = IMInstanceUpdateEvent(
-                    instance_id=instance_id,
-                    new_instance_status=IMInstance.RAY_STOP_REQUESTED,
-                    termination_request=terminate_request,
-                    details=f"draining ray: {terminate_request.details}",
-                )
+                new_instance_status = IMInstance.TERMINATING
+            updates[terminate_request.instance_id] = IMInstanceUpdateEvent(
+                instance_id=instance_id,
+                new_instance_status=new_instance_status,
+                termination_request=terminate_request,
+                details=f"draining ray: {terminate_request.details}",
+            )
 
         # Add new instances.
         for launch_request in to_launch:

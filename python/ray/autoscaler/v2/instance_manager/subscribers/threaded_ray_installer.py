@@ -8,7 +8,7 @@ from ray.autoscaler.v2.instance_manager.instance_manager import (
 )
 from ray.autoscaler.v2.instance_manager.instance_storage import InstanceStorage
 from ray.autoscaler.v2.instance_manager.ray_installer import RayInstaller
-from ray.core.generated.instance_manager_pb2 import Instance, InstanceUpdateEvent
+from ray.core.generated.instance_manager_pb2 import NodeKind, Instance, InstanceUpdateEvent
 
 logger = logging.getLogger(__name__)
 
@@ -46,17 +46,21 @@ class ThreadedRayInstaller(InstanceUpdatedSubscriber):
             status_filter={Instance.ALLOCATED},
         )
         for instance in allocated_instance.values():
-            self._ray_installation_executor.submit(
-                self._install_ray_on_single_node, instance
-            )
+            if instance.node_kind == NodeKind.WORKER:
+                self._ray_installation_executor.submit(
+                    self._install_ray_on_single_node, instance
+                )
 
     def _install_ray_on_single_node(self, instance: Instance) -> None:
+        logger.info(
+            f"Threaded Installing ray on instance {instance.instance_id} version {instance.version} attampts {self._max_install_attempts}"
+        )
         assert instance.status == Instance.ALLOCATED
         success, version = self._instance_storage.upsert_instance(
             instance, expected_instance_version=instance.version
         )
         if not success:
-            logger.warning(
+            logger.info(
                 f"Failed to update instance {instance.instance_id} to RAY_INSTALLING"
             )
             # Do not need to handle failures, it will be covered by
@@ -67,27 +71,42 @@ class ThreadedRayInstaller(InstanceUpdatedSubscriber):
         installed = False
         backoff_factor = 1
         for _ in range(self._max_install_attempts):
-            installed = self._ray_installer.install_ray(instance, self._head_node_ip)
+            try:
+                installed = self._ray_installer.install_ray(instance, self._head_node_ip)
+            except Exception as e:
+                logger.info(
+                    f"Ray installation failed on instance {instance.instance_id}: {e}"
+                )
+                installed = False
             if installed:
                 break
-            logger.warning("Failed to install ray, retrying...")
+            logger.info("Failed to install ray, retrying...")
             time.sleep(self._install_retry_interval * backoff_factor)
             backoff_factor *= 2
 
         if not installed:
+            logger.info(
+                f"Failed to install ray on instance {instance.instance_id} "
+                f"after {self._max_install_attempts} attempts. version {version}"
+            )
             instance.status = Instance.RAY_INSTALL_FAILED
             success, version = self._instance_storage.upsert_instance(
                 instance,
                 expected_instance_version=version,
             )
         else:
-            instance.status = Instance.RAY_RUNNING
-            success, version = self._instance_storage.upsert_instance(
-                instance,
-                expected_instance_version=version,
+            logger.info(
+                f"Successfully installed ray on instance {instance.instance_id} version {version}."
             )
+            # instance.status = Instance.RAY_RUNNING
+            # #TODO add node id
+            # # instance.node_id = instance.
+            # success, version = self._instance_storage.upsert_instance(
+            #     instance,
+            #     expected_instance_version=version,
+            # )
         if not success:
-            logger.warning(
+            logger.info(
                 f"Failed to update instance {instance.instance_id} to {instance.status}"
             )
             # Do not need to handle failures, it will be covered by

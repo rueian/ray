@@ -160,11 +160,21 @@ class NodeUpdater:
             cli_logger.abort(msg)
 
         try:
+            logger.info(
+                "Starting node updater for node {} with runtime hash {}".format(
+                    self.node_id, self.runtime_hash
+                )
+            )
             with LogTimer(
                 self.log_prefix + "Applied config {}".format(self.runtime_hash)
             ):
                 self.do_update()
         except Exception as e:
+            logger.info(
+                "Node updater for node {} failed with error: {}".format(
+                    self.node_id, str(e)
+                )
+            )
             self.provider.set_node_tags(
                 self.node_id, {TAG_RAY_NODE_STATUS: STATUS_UPDATE_FAILED}
             )
@@ -274,9 +284,11 @@ class NodeUpdater:
             )
 
     def wait_ready(self, deadline):
+        logger.info("!Waiting for SSH to become available on node {}.".format(self.node_id))
         with cli_logger.group(
             "Waiting for SSH to become available", _numbered=("[]", 1, NUM_SETUP_STEPS)
         ):
+            logger.info("...")
             with LogTimer(self.log_prefix + "Got remote shell"):
                 cli_logger.print("Running `{}` as a test.", cf.bold("uptime"))
                 first_conn_refused_time = None
@@ -290,6 +302,7 @@ class NodeUpdater:
                         )
 
                     try:
+                        logger.info("Trying to connect to node {}...".format(self.node_id))
                         # Run outside of the container
                         self.cmd_runner.run("uptime", timeout=10, run_env="host")
                         cli_logger.success("Success.")
@@ -333,13 +346,22 @@ class NodeUpdater:
                         time.sleep(READY_CHECK_INTERVAL)
 
     def do_update(self):
-        self.provider.set_node_tags(
-            self.node_id, {TAG_RAY_NODE_STATUS: STATUS_WAITING_FOR_SSH}
-        )
-        cli_logger.labeled_value("New status", STATUS_WAITING_FOR_SSH)
-
+        logger.info("Starting node updater for node {}.".format(self.node_id))
+        try:
+            self.provider.set_node_tags(
+                self.node_id, {TAG_RAY_NODE_STATUS: STATUS_WAITING_FOR_SSH}
+            )
+        except Exception as e:
+            logger.info("Failed to set node tags: {}".format(e))
+            raise e
+        # cli_logger.labeled_value("New status", STATUS_WAITING_FOR_SSH)
+        
+        logger.info("Waiting for SSH to become available on node {}.".format(
+            self.node_id
+        ))
         deadline = time.time() + AUTOSCALER_NODE_START_WAIT_S
         self.wait_ready(deadline)
+        logger.info("SSH is available on node {}.".format(self.node_id))
         global_event_system.execute_callback(CreateClusterEvent.ssh_control_acquired)
 
         node_tags = self.provider.node_tags(self.node_id)
@@ -377,6 +399,7 @@ class NodeUpdater:
             or node_tags.get(TAG_RAY_FILE_MOUNTS_CONTENTS)
             == self.file_mounts_contents_hash
         ):
+            logger.info("Configuration already up to date")
             # todo: we lie in the confirmation message since
             # full setup might be cancelled here
             cli_logger.print(
@@ -386,6 +409,7 @@ class NodeUpdater:
             )
 
         else:
+            logger.info("Updating cluster configuration")
             cli_logger.print(
                 "Updating cluster configuration.", _tags=dict(hash=self.runtime_hash)
             )
@@ -459,6 +483,7 @@ class NodeUpdater:
                         file_mounts=self.file_mounts,
                         sync_run_yet=True,
                     )
+                logger.info("setup_commands {}".format(self.setup_commands))
                 if self.setup_commands:
                     with cli_logger.group(
                         "Running setup commands",
@@ -500,6 +525,7 @@ class NodeUpdater:
                         _numbered=("[]", 6, NUM_SETUP_STEPS),
                     )
 
+        logger.info("ray_start_commands {}".format(self.ray_start_commands))
         with cli_logger.group(
             "Starting the Ray runtime", _numbered=("[]", 7, NUM_SETUP_STEPS)
         ):
@@ -528,9 +554,11 @@ class NodeUpdater:
                         old_redirected = cmd_output_util.is_output_redirected()
                         cmd_output_util.set_output_redirected(False)
                         # Runs in the container if docker is in use
+                        logger.info("cmd_runner {}".format(cmd))
                         self.cmd_runner.run(
                             cmd, environment_variables=env_vars, run_env="auto"
                         )
+                        logger.info("DONE! cmd_runner {}".format(cmd))
                         cmd_output_util.set_output_redirected(old_redirected)
                     except ProcessRunnerError as e:
                         if e.msg_type == "ssh_command_failed":
@@ -541,6 +569,7 @@ class NodeUpdater:
             global_event_system.execute_callback(
                 CreateClusterEvent.start_ray_runtime_completed
             )
+        logger.info("DONE! ray_start_commands {}".format(self.ray_start_commands))
 
     def rsync_up(self, source, target, docker_mount_if_possible=False):
         options = {}

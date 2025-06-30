@@ -201,6 +201,10 @@ class AWSNodeProvider(NodeProvider):
         return node.private_ip_address
 
     def set_node_tags(self, node_id, tags):
+        logger.info(f"Setting tags {tags} on node {node_id}")
+        with self.tag_cache_lock:
+            logger.info("Current tag_cache: {}".format(self.tag_cache))
+            logger.info("Current tag_cache_pending: {}".format(self.tag_cache_pending))
         is_batching_thread = False
         with self.tag_cache_lock:
             if not self.tag_cache_pending:
@@ -210,7 +214,7 @@ class AWSNodeProvider(NodeProvider):
                 self.ready_for_new_batch.clear()
                 self.batch_update_done.clear()
             self.tag_cache_pending[node_id].update(tags)
-
+        logger.info(f"Setting tags {tags} on node {node_id} continue {is_batching_thread}")
         if is_batching_thread:
             time.sleep(TAG_BATCH_DELAY)
             with self.tag_cache_lock:

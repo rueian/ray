@@ -319,7 +319,7 @@ if __name__ == "__main__":
     else:
         autoscaling_config = os.path.expanduser(args.autoscaling_config)
         config_reader = FileConfigReader(
-            config_file=autoscaling_config, skip_content_hash=True
+            config_file=autoscaling_config, skip_content_hash=False
         )
 
     monitor = AutoscalerMonitor(
