@@ -39,9 +39,24 @@ void NormalTaskExecutionQueue::Stop() {
       "Normal task execution queue stopped; canceling all queued tasks.");
 }
 
-void NormalTaskExecutionQueue::EnqueueTask(TaskToExecute task) {
+/// Add a new task's callbacks to the worker queue.
+void NormalTaskExecutionQueue::Add(
+    int64_t seq_no,
+    int64_t client_processed_up_to,
+    std::function<void(const TaskSpecification &, rpc::SendReplyCallback)> accept_request,
+    std::function<void(const TaskSpecification &, const Status &, rpc::SendReplyCallback)>
+        reject_request,
+    rpc::SendReplyCallback send_reply_callback,
+    TaskSpecification task_spec) {
   absl::MutexLock lock(&mu_);
-  pending_normal_tasks_.push_back(std::move(task));
+  // Normal tasks should not have ordering constraints.
+  RAY_CHECK(seq_no == -1);
+  // Create a TaskToExecute object for the new task, and add it to the queue.
+
+  pending_normal_tasks_.push_back(TaskToExecute(std::move(accept_request),
+                                                std::move(reject_request),
+                                                std::move(send_reply_callback),
+                                                std::move(task_spec)));
 }
 
 bool NormalTaskExecutionQueue::CancelTaskIfFound(TaskID task_id) {
@@ -71,7 +86,7 @@ std::optional<TaskToExecute> NormalTaskExecutionQueue::TryPopQueuedTask() {
 
 void NormalTaskExecutionQueue::ExecuteQueuedTasks() {
   while (auto task = TryPopQueuedTask()) {
-    task->Execute();
+    task->Accept();
   }
 }
 

@@ -9,7 +9,6 @@ ray_cc_library(
         "//src/ray/core_worker:__pkg__",
     ],
     deps = [
-        ":common",
         ":concurrency_group_manager",
         ":fiber",
         ":normal_task_execution_queue",
@@ -67,10 +66,9 @@ ray_cc_library(
     name = "common",
     srcs = ["common.cc"],
     hdrs = ["common.h"],
-    visibility = [":__subpackages__"],
+    visibility = ["//visibility:private"],
     deps = [
         "//src/ray/common:id",
-        "//src/ray/common:ray_object",
         "//src/ray/common:task_common",
         "//src/ray/protobuf:common_cc_proto",
         "//src/ray/rpc:rpc_callback_types",
@@ -82,7 +80,6 @@ ray_cc_library(
     hdrs = ["actor_task_execution_queue_interface.h"],
     visibility = ["//visibility:private"],
     deps = [
-        ":common",
         "//src/ray/common:task_common",
         "//src/ray/rpc:rpc_callback_types",
     ],

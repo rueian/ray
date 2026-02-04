@@ -62,9 +62,15 @@ void OrderedActorTaskExecutionQueue::Stop() {
   CancelAllQueuedTasks("Actor task execution queue stopped; canceling all queued tasks.");
 }
 
-void OrderedActorTaskExecutionQueue::EnqueueTask(int64_t seq_no,
-                                                 int64_t client_processed_up_to,
-                                                 TaskToExecute task) {
+/// Add a new actor task's callbacks to the worker queue.
+void OrderedActorTaskExecutionQueue::Add(
+    int64_t seq_no,
+    int64_t client_processed_up_to,
+    std::function<void(const TaskSpecification &, rpc::SendReplyCallback)> accept_request,
+    std::function<void(const TaskSpecification &, const Status &, rpc::SendReplyCallback)>
+        reject_request,
+    rpc::SendReplyCallback send_reply_callback,
+    TaskSpecification task_spec) {
   // A seq_no of -1 means no ordering constraint. Non-retry Actor tasks must be executed
   // in order.
   RAY_CHECK(seq_no != -1);
@@ -75,14 +81,15 @@ void OrderedActorTaskExecutionQueue::EnqueueTask(int64_t seq_no,
                   << client_processed_up_to;
     next_seq_no_ = client_processed_up_to + 1;
   }
-
-  // Make a copy of the task spec because `task` is moved below.
-  TaskSpecification task_spec = task.TaskSpec();
-  RAY_LOG(DEBUG).WithField(task_spec.TaskId())
-      << "Enqueuing in order actor task, seq_no=" << seq_no
-      << ", next_seq_no_=" << next_seq_no_;
+  auto task_id = task_spec.TaskId();
+  RAY_LOG(DEBUG).WithField(task_id) << "Enqueuing in order actor task, seq_no=" << seq_no
+                                    << ", next_seq_no_=" << next_seq_no_;
 
   const auto dependencies = task_spec.GetDependencies();
+  TaskToExecute task(std::move(accept_request),
+                     std::move(reject_request),
+                     std::move(send_reply_callback),
+                     task_spec);
   const bool is_retry = task_spec.IsRetry();
   TaskToExecute *retry_task = nullptr;
   if (is_retry) {
@@ -96,12 +103,12 @@ void OrderedActorTaskExecutionQueue::EnqueueTask(int64_t seq_no,
   }
   {
     absl::MutexLock lock(&mu_);
-    pending_task_id_to_is_canceled.emplace(task_spec.TaskId(), false);
+    pending_task_id_to_is_canceled.emplace(task_id, false);
   }
 
   if (!dependencies.empty()) {
     RAY_UNUSED(task_event_buffer_.RecordTaskStatusEventIfNeeded(
-        task_spec.TaskId(),
+        task_id,
         task_spec.JobId(),
         task_spec.AttemptNumber(),
         task_spec,
@@ -136,7 +143,7 @@ void OrderedActorTaskExecutionQueue::EnqueueTask(int64_t seq_no,
     });
   } else {
     RAY_UNUSED(task_event_buffer_.RecordTaskStatusEventIfNeeded(
-        task_spec.TaskId(),
+        task_id,
         task_spec.JobId(),
         task_spec.AttemptNumber(),
         task_spec,
@@ -288,7 +295,7 @@ void OrderedActorTaskExecutionQueue::AcceptRequestOrRejectIfCanceled(
     request.Cancel(
         Status::SchedulingCancelled("Task is canceled before it is scheduled."));
   } else {
-    request.Execute();
+    request.Accept();
   }
 
   absl::MutexLock lock(&mu_);

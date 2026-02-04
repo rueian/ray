@@ -15,7 +15,6 @@
 #pragma once
 
 #include "ray/common/task/task_spec.h"
-#include "ray/core_worker/task_execution/common.h"
 #include "ray/rpc/rpc_callback_types.h"
 
 namespace ray {
@@ -24,9 +23,15 @@ namespace core {
 class ActorTaskExecutionQueueInterface {
  public:
   virtual ~ActorTaskExecutionQueueInterface() = default;
-  virtual void EnqueueTask(int64_t seq_no,
-                           int64_t client_processed_up_to,
-                           TaskToExecute task) = 0;
+  virtual void Add(int64_t seq_no,
+                   int64_t client_processed_up_to,
+                   std::function<void(const TaskSpecification &, rpc::SendReplyCallback)>
+                       accept_request,
+                   std::function<void(const TaskSpecification &,
+                                      const Status &,
+                                      rpc::SendReplyCallback)> reject_request,
+                   rpc::SendReplyCallback send_reply_callback,
+                   TaskSpecification task_spec) = 0;
   virtual void Stop() = 0;
   virtual bool CancelTaskIfFound(TaskID task_id) = 0;
 };

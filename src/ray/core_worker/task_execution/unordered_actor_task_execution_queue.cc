@@ -77,9 +77,14 @@ void UnorderedActorTaskExecutionQueue::Stop() {
   CancelAllQueuedTasks("Actor task execution queue stopped; canceling all queued tasks.");
 }
 
-void UnorderedActorTaskExecutionQueue::EnqueueTask(int64_t seq_no,
-                                                   int64_t client_processed_up_to,
-                                                   TaskToExecute task) {
+void UnorderedActorTaskExecutionQueue::Add(
+    int64_t seq_no,
+    int64_t client_processed_up_to,
+    std::function<void(const TaskSpecification &, rpc::SendReplyCallback)> accept_request,
+    std::function<void(const TaskSpecification &, const Status &, rpc::SendReplyCallback)>
+        reject_request,
+    rpc::SendReplyCallback send_reply_callback,
+    TaskSpecification task_spec) {
   // Add and execute a task. For different attempts of the same
   // task id, if an attempt is running, the other attempt will
   // wait until the first attempt finishes so that no more
@@ -88,43 +93,47 @@ void UnorderedActorTaskExecutionQueue::EnqueueTask(int64_t seq_no,
   // task concurrently is that it's not safe to assume user's
   // code can handle concurrent execution of the same actor method.
   RAY_CHECK(std::this_thread::get_id() == main_thread_id_);
-  TaskID task_id = task.TaskID();
-  bool run_task = true;
-  std::optional<TaskToExecute> task_to_cancel;
+  auto task_id = task_spec.TaskId();
+  auto request = TaskToExecute(std::move(accept_request),
+                               std::move(reject_request),
+                               std::move(send_reply_callback),
+                               std::move(task_spec));
+  bool run_request = true;
+  std::optional<TaskToExecute> request_to_cancel;
   {
     absl::MutexLock lock(&mu_);
     if (pending_task_id_to_is_canceled.contains(task_id)) {
       // There is a previous attempt of the same task running,
       // queue the current attempt.
-      run_task = false;
+      run_request = false;
 
-      auto it = queued_actor_tasks_.find(task_id);
-      if (it != queued_actor_tasks_.end()) {
+      if (queued_actor_tasks_.contains(task_id)) {
         // There is already an attempt of the same task queued,
         // keep the one with larger attempt number and cancel the other one.
-        RAY_CHECK_NE(it->second.AttemptNumber(), task.AttemptNumber());
-        if (it->second.AttemptNumber() > task.AttemptNumber()) {
+        RAY_CHECK_NE(queued_actor_tasks_[task_id].AttemptNumber(),
+                     request.AttemptNumber());
+        if (queued_actor_tasks_[task_id].AttemptNumber() > request.AttemptNumber()) {
           // This can happen if the PushTaskRequest arrives out of order.
-          task_to_cancel = std::move(task);
+          request_to_cancel = request;
         } else {
-          task_to_cancel = std::move(it->second);
-          queued_actor_tasks_.insert_or_assign(task_id, std::move(task));
+          request_to_cancel = queued_actor_tasks_[task_id];
+          queued_actor_tasks_[task_id] = request;
         }
       } else {
-        queued_actor_tasks_.emplace(task_id, std::move(task));
+        queued_actor_tasks_[task_id] = request;
       }
     } else {
       pending_task_id_to_is_canceled.emplace(task_id, false);
-      run_task = true;
+      run_request = true;
     }
   }
 
-  if (run_task) {
-    RunRequest(std::move(task));
+  if (run_request) {
+    RunRequest(std::move(request));
   }
 
-  if (task_to_cancel.has_value()) {
-    task_to_cancel->Cancel(Status::SchedulingCancelled(
+  if (request_to_cancel.has_value()) {
+    request_to_cancel->Cancel(Status::SchedulingCancelled(
         "In favor of the same task with larger attempt number"));
   }
 }
@@ -142,14 +151,14 @@ bool UnorderedActorTaskExecutionQueue::CancelTaskIfFound(TaskID task_id) {
 }
 
 void UnorderedActorTaskExecutionQueue::RunRequestWithResolvedDependencies(
-    TaskToExecute request) {
+    TaskToExecute &request) {
   RAY_CHECK(request.DependenciesResolved());
   const auto task_id = request.TaskID();
   if (is_asyncio_) {
     // Process async actor task.
     auto fiber = fiber_state_manager_->GetExecutor(request.ConcurrencyGroupName(),
                                                    request.FunctionDescriptor());
-    fiber->EnqueueFiber([this, request = std::move(request), task_id]() mutable {
+    fiber->EnqueueFiber([this, request, task_id]() mutable {
       AcceptRequestOrRejectIfCanceled(task_id, request);
     });
   } else {
@@ -160,7 +169,7 @@ void UnorderedActorTaskExecutionQueue::RunRequestWithResolvedDependencies(
     if (pool == nullptr) {
       AcceptRequestOrRejectIfCanceled(task_id, request);
     } else {
-      pool->Post([this, request = std::move(request), task_id]() mutable {
+      pool->Post([this, request, task_id]() mutable {
         AcceptRequestOrRejectIfCanceled(task_id, request);
       });
     }
@@ -192,7 +201,7 @@ void UnorderedActorTaskExecutionQueue::RunRequest(TaskToExecute request) {
           /* include_task_info */ false));
 
       request.MarkDependenciesResolved();
-      RunRequestWithResolvedDependencies(std::move(request));
+      RunRequestWithResolvedDependencies(request);
     });
   } else {
     RAY_UNUSED(task_event_buffer_.RecordTaskStatusEventIfNeeded(
@@ -203,7 +212,7 @@ void UnorderedActorTaskExecutionQueue::RunRequest(TaskToExecute request) {
         rpc::TaskStatus::PENDING_ACTOR_TASK_ORDERING_OR_CONCURRENCY,
         /* include_task_info */ false));
     request.MarkDependenciesResolved();
-    RunRequestWithResolvedDependencies(std::move(request));
+    RunRequestWithResolvedDependencies(request);
   }
 }
 
@@ -223,16 +232,15 @@ void UnorderedActorTaskExecutionQueue::AcceptRequestOrRejectIfCanceled(
     request.Cancel(
         Status::SchedulingCancelled("Task is canceled before it is scheduled."));
   } else {
-    request.Execute();
+    request.Accept();
   }
 
   std::optional<TaskToExecute> request_to_run;
   {
     absl::MutexLock lock(&mu_);
-    auto it = queued_actor_tasks_.find(task_id);
-    if (it != queued_actor_tasks_.end()) {
-      request_to_run = std::move(it->second);
-      queued_actor_tasks_.erase(it);
+    if (queued_actor_tasks_.contains(task_id)) {
+      request_to_run = queued_actor_tasks_[task_id];
+      queued_actor_tasks_.erase(task_id);
     } else {
       pending_task_id_to_is_canceled.erase(task_id);
     }
