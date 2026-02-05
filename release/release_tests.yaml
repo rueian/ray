@@ -3037,7 +3037,7 @@
 
   run:
     timeout: 3600
-    script: python distributed/test_scheduling.py --total-num-task=1984000 --num-cpu-per-task=1
+    script: RAY_enable_ray_event=0 python distributed/test_scheduling.py --total-num-task=1984000 --num-cpu-per-task=1
       --task-duration-s=0 --total-num-actors=32 --num-actors-per-nodes=1
 
     wait_for_nodes:
