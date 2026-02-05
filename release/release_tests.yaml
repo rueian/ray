@@ -3033,6 +3033,7 @@
     byod:
       runtime_env:
         - LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so
+        - RAY_enable_core_worker_ray_event_to_aggregator=0
     cluster_compute: scheduling.yaml
 
   run:
