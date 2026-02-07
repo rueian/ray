@@ -465,7 +465,7 @@ TaskEventBufferImpl::~TaskEventBufferImpl() { Stop(); }
 Status TaskEventBufferImpl::Start(bool auto_flush) {
   absl::MutexLock lock(&mutex_);
   send_task_events_to_gcs_enabled_ = false;
-  send_ray_events_to_aggregator_enabled_ = false;
+  send_ray_events_to_aggregator_enabled_ = true;
 
   // We want to make sure that only one of the event export mechanism is enabled. And
   // if both are enabled, we will use the event aggregator instead of the export API.
