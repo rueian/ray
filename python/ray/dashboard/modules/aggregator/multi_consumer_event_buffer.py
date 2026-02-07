@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from ray.dashboard.modules.aggregator.constants import (
     AGGREGATOR_AGENT_METRIC_PREFIX,
     CONSUMER_TAG_KEY,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

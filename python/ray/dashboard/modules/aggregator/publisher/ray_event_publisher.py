@@ -160,6 +160,20 @@ class RayEventPublisher(RayEventPublisherInterface):
             start = asyncio.get_running_loop().time()
             result = await self._publish_client.publish(batch)
             duration = asyncio.get_running_loop().time() - start
+            attempt_number = failed_attempts_since_last_success + 1
+
+            logger.info(
+                "Publisher %s attempt %s result=%s duration=%.3fs total=%s "
+                "published=%s filtered=%s error=%s",
+                self._name,
+                attempt_number,
+                "success" if result.is_publish_successful else "failure",
+                duration,
+                num_events_in_batch,
+                int(result.num_events_published),
+                int(result.num_events_filtered_out),
+                result.error_message if not result.is_publish_successful else "",
+            )
 
             if result.is_publish_successful:
                 await self._record_success(
@@ -204,6 +218,11 @@ class RayEventPublisher(RayEventPublisherInterface):
         if self._jitter_ratio > 0:
             jitter = delay * self._jitter_ratio
             delay = max(0.0, random.uniform(delay - jitter, delay + jitter))
+        logger.info(
+            "Publisher %s sleeping for %.3fs before retry",
+            self._name,
+            delay,
+        )
         await asyncio.sleep(delay)
 
     async def _record_success(

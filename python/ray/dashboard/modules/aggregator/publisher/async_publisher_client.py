@@ -34,6 +34,8 @@ class PublishStats:
     num_events_published: int
     # Number of events filtered out
     num_events_filtered_out: int
+    # Optional error message when publish fails
+    error_message: Optional[str] = None
 
 
 @dataclass
@@ -161,6 +163,7 @@ class AsyncHttpPublisherClient(PublisherClientInterface):
                 is_publish_successful=False,
                 num_events_published=0,
                 num_events_filtered_out=0,
+                error_message=str(e),
             )
 
     async def _send_http_request(self, json_data, num_filtered_out) -> PublishStats:
@@ -255,6 +258,7 @@ class AsyncGCSTaskEventsPublisherClient(PublisherClientInterface):
                     is_publish_successful=False,
                     num_events_published=0,
                     num_events_filtered_out=0,
+                    error_message=f"GCS AddEvents failed: {status_code}",
                 )
             return PublishStats(
                 is_publish_successful=True,
@@ -267,6 +271,7 @@ class AsyncGCSTaskEventsPublisherClient(PublisherClientInterface):
                 is_publish_successful=False,
                 num_events_published=0,
                 num_events_filtered_out=0,
+                error_message=str(e),
             )
 
     def _create_ray_events_data(
