@@ -464,15 +464,13 @@ TaskEventBufferImpl::~TaskEventBufferImpl() { Stop(); }
 
 Status TaskEventBufferImpl::Start(bool auto_flush) {
   absl::MutexLock lock(&mutex_);
-  send_task_events_to_gcs_enabled_ =
-      RayConfig::instance().enable_core_worker_task_event_to_gcs();
+  send_task_events_to_gcs_enabled_ = false;
   send_ray_events_to_aggregator_enabled_ = false;
 
   // We want to make sure that only one of the event export mechanism is enabled. And
   // if both are enabled, we will use the event aggregator instead of the export API.
   // This code will be removed when we deprecate the export API implementation.
-  export_event_write_enabled_ = !send_ray_events_to_aggregator_enabled_ &&
-                                TaskEventBufferImpl::IsExportAPIEnabledTask();
+  export_event_write_enabled_ = false;
   auto report_interval_ms = RayConfig::instance().task_events_report_interval_ms();
   RAY_CHECK(report_interval_ms > 0)
       << "RAY_task_events_report_interval_ms should be > 0 to use TaskEventBuffer.";
