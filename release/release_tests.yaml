@@ -1112,8 +1112,10 @@
 
   cluster:
     byod:
+      post_build_script: build_getenv_preload.sh
       runtime_env:
         - RLLIB_TEST_NO_JAX_IMPORT=1
+        - LD_PRELOAD=/home/ray/getenv_trace_preload.so
     cluster_compute: tpl_cpu_1.yaml
 
   run:
