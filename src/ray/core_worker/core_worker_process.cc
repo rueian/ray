@@ -842,14 +842,6 @@ CoreWorkerProcessImpl::CoreWorkerProcessImpl(const CoreWorkerOptions &options)
   }
 
   {
-    // Notify that core worker is initialized.
-    absl::Cleanup initialzed_scope_guard = [this] {
-      service_handler_->SetCoreWorker(this->GetCoreWorker().get());
-    };
-    // Initialize global worker instance.
-    auto worker = CreateCoreWorker(options_, worker_id_);
-    auto write_locked = core_worker_.LockForWrite();
-    write_locked.Get() = worker;
     // Initialize metrics agent client.
     // Port > 0 means valid port, -1 means metrics agent not available (minimal install).
     if (options_.metrics_agent_port > 0) {
@@ -870,6 +862,14 @@ CoreWorkerProcessImpl::CoreWorkerProcessImpl(const CoreWorkerOptions &options)
       RAY_LOG(INFO) << "Metrics agent not available. To enable metrics, install Ray "
                        "with dashboard support: `pip install 'ray[default]'`.";
     }
+    // Notify that core worker is initialized.
+    absl::Cleanup initialzed_scope_guard = [this] {
+      service_handler_->SetCoreWorker(this->GetCoreWorker().get());
+    };
+    // Initialize global worker instance.
+    auto worker = CreateCoreWorker(options_, worker_id_);
+    auto write_locked = core_worker_.LockForWrite();
+    write_locked.Get() = worker;
   }
 }
 
