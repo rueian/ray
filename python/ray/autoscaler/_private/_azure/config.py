@@ -12,7 +12,7 @@ from azure.common.credentials import get_cli_profile
 from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
 from azure.identity import AzureCliCredential
 from azure.mgmt.resource import ResourceManagementClient
-from azure.mgmt.resource.resources.models import DeploymentMode
+from azure.mgmt.resource.deployments.models import DeploymentMode
 
 from ray.autoscaler._private.util import (
     generate_rsa_key_pair,
@@ -309,7 +309,7 @@ def _configure_resource_group(config):
 
     parameters = {
         "properties": {
-            "mode": DeploymentMode.incremental,
+            "mode": DeploymentMode.INCREMENTAL,
             "template": template,
             "parameters": {
                 "subnet": {"value": subnet_mask},

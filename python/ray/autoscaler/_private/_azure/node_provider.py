@@ -14,7 +14,7 @@ from azure.identity import DefaultAzureCredential
 from azure.mgmt.compute import ComputeManagementClient
 from azure.mgmt.network import NetworkManagementClient
 from azure.mgmt.resource import ResourceManagementClient
-from azure.mgmt.resource.resources.models import DeploymentMode
+from azure.mgmt.resource.deployments.models import DeploymentMode
 
 from ray._common.usage.usage_lib import get_cloud_from_metadata_requests
 from ray.autoscaler._private._azure.config import (
@@ -477,7 +477,7 @@ class AzureNodeProvider(NodeProvider):
 
         parameters = {
             "properties": {
-                "mode": DeploymentMode.incremental,
+                "mode": DeploymentMode.INCREMENTAL,
                 "template": template,
                 "parameters": {
                     key: {"value": value} for key, value in template_params.items()
