@@ -511,6 +511,45 @@ TEST_F(CoreWorkerTest, AsyncGeneratorUnblockNotifyFiresOnConsumptionUpdate) {
   ASSERT_EQ(count, 1);
 }
 
+TEST_F(CoreWorkerTest, GeneratorBackpressureSubscribesToOwnerFailureOnly) {
+  const auto owner_worker_id = WorkerID::FromRandom();
+  rpc::Address owner_address;
+  owner_address.set_worker_id(owner_worker_id.Binary());
+
+  // Backpressure registration must never install the all-workers failure
+  // subscription. established once per owner no matter how
+  // many generator tasks it submits.
+  EXPECT_CALL(*mock_gcs_client_->mock_worker_accessor,
+              AsyncSubscribeToWorkerFailures(_, _))
+      .Times(0);
+  EXPECT_CALL(*mock_gcs_client_->mock_worker_accessor,
+              AsyncSubscribeToWorkerFailure(owner_worker_id, _, _))
+      .Times(1);
+
+  auto waiter = std::make_shared<TaskGeneratorBackpressureWaiter>(
+      /*generator_backpressure_num_objects=*/1, []() { return Status::OK(); });
+  core_worker_->RegisterGeneratorBackpressureState(
+      ObjectID::FromRandom(), waiter, /*actor_metadata=*/nullptr, owner_address);
+  // A second generator task from the same owner reuses the subscription.
+  core_worker_->RegisterGeneratorBackpressureState(
+      ObjectID::FromRandom(), waiter, /*actor_metadata=*/nullptr, owner_address);
+
+  // Once the owner dies its keyed subscription can never fire again, so the
+  // sweep drops it.
+  EXPECT_CALL(*mock_gcs_client_->mock_worker_accessor,
+              AsyncUnsubscribeFromWorkerFailure(owner_worker_id))
+      .Times(1);
+  core_worker_->HandleOwnerDied(owner_worker_id);
+
+  // With the owner gone, a fresh registration for it re-subscribes (the
+  // liveness fetch after subscribing re-detects the death in production).
+  EXPECT_CALL(*mock_gcs_client_->mock_worker_accessor,
+              AsyncSubscribeToWorkerFailure(owner_worker_id, _, _))
+      .Times(1);
+  core_worker_->RegisterGeneratorBackpressureState(
+      ObjectID::FromRandom(), waiter, /*actor_metadata=*/nullptr, owner_address);
+}
+
 TEST_F(CoreWorkerTest, HandleGetObjectStatusIdempotency) {
   auto object_id = ObjectID::FromRandom();
   auto ray_object = MakeRayObject("test_data", "meta");

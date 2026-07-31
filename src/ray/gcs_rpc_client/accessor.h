@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/synchronization/mutex.h"
 #include "ray/common/id.h"
 #include "ray/common/placement_group.h"
@@ -427,6 +428,25 @@ class WorkerInfoAccessor {
       const rpc::ItemCallback<rpc::WorkerDeltaData> &subscribe,
       const rpc::StatusCallback &done);
 
+  /// Subscribe to the unexpected failure of a single worker. Unlike
+  /// AsyncSubscribeToWorkerFailures, the GCS only delivers failures of
+  /// \p worker_id to this subscriber, so the per-death fan-out stays
+  /// proportional to the number of interested subscribers instead of the
+  /// number of workers in the cluster.
+  ///
+  /// \param worker_id The worker whose failure to subscribe to.
+  /// \param subscribe Callback that will be called when the worker fails.
+  /// \param done Callback that will be called when subscription is complete.
+  virtual void AsyncSubscribeToWorkerFailure(
+      const WorkerID &worker_id,
+      const rpc::ItemCallback<rpc::WorkerDeltaData> &subscribe,
+      const rpc::StatusCallback &done);
+
+  /// Cancel a subscription made by AsyncSubscribeToWorkerFailure.
+  ///
+  /// \param worker_id The worker previously subscribed to.
+  virtual void AsyncUnsubscribeFromWorkerFailure(const WorkerID &worker_id);
+
   /// Report a worker failure to GCS asynchronously.
   ///
   /// \param data_ptr The worker failure information that will be reported to GCS.
@@ -483,6 +503,15 @@ class WorkerInfoAccessor {
   /// Save the subscribe operation in this function, so we can call it again when GCS
   /// restarts from a failure.
   SubscribeOperation subscribe_operation_;
+
+  /// Guards the per-worker subscribe operations, which are mutated from
+  /// arbitrary threads (e.g. task execution threads registering generator
+  /// backpressure state) and read on GCS reconnection.
+  absl::Mutex per_worker_mutex_;
+  /// Per-worker subscribe operations, kept so they can be replayed when GCS
+  /// restarts from a failure. Keyed by the subscribed-to worker id.
+  absl::flat_hash_map<WorkerID, SubscribeOperation> per_worker_subscribe_operations_
+      ABSL_GUARDED_BY(per_worker_mutex_);
 
   GcsClient *client_impl_;
 };

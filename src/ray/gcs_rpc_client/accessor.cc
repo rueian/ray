@@ -621,6 +621,31 @@ void WorkerInfoAccessor::AsyncSubscribeToWorkerFailures(
   subscribe_operation_(done);
 }
 
+void WorkerInfoAccessor::AsyncSubscribeToWorkerFailure(
+    const WorkerID &worker_id,
+    const rpc::ItemCallback<rpc::WorkerDeltaData> &subscribe,
+    const rpc::StatusCallback &done) {
+  RAY_CHECK(subscribe != nullptr);
+  std::function<void(const rpc::StatusCallback &)> subscribe_operation =
+      [this, worker_id, subscribe](const rpc::StatusCallback &done_callback) {
+        client_impl_->GetGcsSubscriber().SubscribeWorkerFailure(
+            worker_id, subscribe, done_callback);
+      };
+  {
+    absl::MutexLock lock(&per_worker_mutex_);
+    per_worker_subscribe_operations_[worker_id] = subscribe_operation;
+  }
+  subscribe_operation(done);
+}
+
+void WorkerInfoAccessor::AsyncUnsubscribeFromWorkerFailure(const WorkerID &worker_id) {
+  {
+    absl::MutexLock lock(&per_worker_mutex_);
+    per_worker_subscribe_operations_.erase(worker_id);
+  }
+  client_impl_->GetGcsSubscriber().UnsubscribeWorkerFailure(worker_id);
+}
+
 void WorkerInfoAccessor::AsyncResubscribe() {
   // TODO(iycheng): Fix the case where messages has been pushed to GCS but
   // resubscribe hasn't been done yet. In this case, we'll lose that message.
@@ -628,6 +653,18 @@ void WorkerInfoAccessor::AsyncResubscribe() {
   // The pub-sub server has restarted, we need to resubscribe to the pub-sub server.
   if (subscribe_operation_ != nullptr) {
     subscribe_operation_(nullptr);
+  }
+  std::vector<SubscribeOperation> per_worker_operations;
+  {
+    absl::MutexLock lock(&per_worker_mutex_);
+    per_worker_operations.reserve(per_worker_subscribe_operations_.size());
+    for (const std::pair<const WorkerID, SubscribeOperation> &entry :
+         per_worker_subscribe_operations_) {
+      per_worker_operations.push_back(entry.second);
+    }
+  }
+  for (const SubscribeOperation &operation : per_worker_operations) {
+    operation(nullptr);
   }
 }
 
