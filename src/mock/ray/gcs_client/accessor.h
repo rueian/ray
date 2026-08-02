@@ -173,11 +173,12 @@ class MockWorkerInfoAccessor : public WorkerInfoAccessor {
               AsyncSubscribeToWorkerFailure,
               (const WorkerID &worker_id,
                const rpc::ItemCallback<rpc::WorkerDeltaData> &subscribe,
-               const rpc::StatusCallback &done),
+               const rpc::StatusCallback &done,
+               (std::optional<uint64_t>)subscription_generation),
               (override));
   MOCK_METHOD(void,
               AsyncUnsubscribeFromWorkerFailure,
-              (const WorkerID &worker_id),
+              (const WorkerID &worker_id, (std::optional<uint64_t>)expected_generation),
               (override));
   MOCK_METHOD(void,
               AsyncReportWorkerFailure,

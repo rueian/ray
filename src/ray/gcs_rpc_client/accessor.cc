@@ -621,29 +621,118 @@ void WorkerInfoAccessor::AsyncSubscribeToWorkerFailures(
   subscribe_operation_(done);
 }
 
+void WorkerInfoAccessor::ReconcileKeyedWorkerFailureSubscription(
+    const WorkerID &worker_id, uint64_t generation) {
+  // Called after queueing SubscribeWorkerFailure outside per_worker_mutex_.
+  // A concurrent Unsubscribe may have erased us, or a newer Subscribe may have
+  // superseded us.
+  SubscribeOperation newer_operation;
+  bool should_unsubscribe = false;
+  {
+    absl::MutexLock lock(&per_worker_mutex_);
+    auto it = per_worker_subscribe_operations_.find(worker_id);
+    if (it == per_worker_subscribe_operations_.end()) {
+      // Unsubscribed while our Sub was in flight — drop the local watch.
+      should_unsubscribe = true;
+    } else if (it->second.generation != generation) {
+      // Superseded: do not Unsub (that would tear down the newer callback and
+      // open a death-notification gap). Replay the current generation; the
+      // operation pre-Sub check avoids installing this stale callback again.
+      newer_operation = it->second.operation;
+    }
+  }
+  if (should_unsubscribe) {
+    client_impl_->GetGcsSubscriber().UnsubscribeWorkerFailure(worker_id);
+  }
+  if (newer_operation != nullptr) {
+    newer_operation(nullptr);
+  }
+}
+
 void WorkerInfoAccessor::AsyncSubscribeToWorkerFailure(
     const WorkerID &worker_id,
     const rpc::ItemCallback<rpc::WorkerDeltaData> &subscribe,
-    const rpc::StatusCallback &done) {
+    const rpc::StatusCallback &done,
+    std::optional<uint64_t> subscription_generation) {
   RAY_CHECK(subscribe != nullptr);
-  std::function<void(const rpc::StatusCallback &)> subscribe_operation =
-      [this, worker_id, subscribe](const rpc::StatusCallback &done_callback) {
-        client_impl_->GetGcsSubscriber().SubscribeWorkerFailure(
-            worker_id, subscribe, done_callback);
-      };
+  // Capture `done` so AsyncResubscribe can replay post-subscribe logic (e.g. a
+  // liveness fetch). Initial subscribe passes `done` explicitly; resubscribe
+  // passes nullptr and falls back to the captured callback.
+  //
+  // Generation + post-Sub reconcile keep races closed without holding
+  // per_worker_mutex_ across pubsub Sub/Unsub (avoids nesting Subscriber work
+  // under the accessor lock).
+  uint64_t generation = 0;
+  SubscribeOperation subscribe_operation;
   {
     absl::MutexLock lock(&per_worker_mutex_);
-    per_worker_subscribe_operations_[worker_id] = subscribe_operation;
+    if (subscription_generation.has_value()) {
+      generation = *subscription_generation;
+      if (generation >= next_per_worker_subscribe_generation_) {
+        next_per_worker_subscribe_generation_ = generation + 1;
+      }
+    } else {
+      generation = next_per_worker_subscribe_generation_++;
+    }
+    subscribe_operation = [this, worker_id, subscribe, done, generation](
+                              const rpc::StatusCallback &done_callback) {
+      // Stale copies (AsyncResubscribe, Unsub restore, Reconcile replay) must
+      // not Sub if they are no longer the active generation — otherwise they
+      // briefly install the wrong death callback over a newer watch.
+      SubscribeOperation newer_operation;
+      {
+        absl::MutexLock lock(&per_worker_mutex_);
+        auto it = per_worker_subscribe_operations_.find(worker_id);
+        if (it == per_worker_subscribe_operations_.end()) {
+          return;
+        }
+        if (it->second.generation != generation) {
+          newer_operation = it->second.operation;
+        }
+      }
+      if (newer_operation != nullptr) {
+        newer_operation(nullptr);
+        return;
+      }
+      const rpc::StatusCallback &cb = done_callback != nullptr ? done_callback : done;
+      client_impl_->GetGcsSubscriber().SubscribeWorkerFailure(worker_id, subscribe, cb);
+      ReconcileKeyedWorkerFailureSubscription(worker_id, generation);
+    };
+    per_worker_subscribe_operations_[worker_id] = {generation, subscribe_operation};
   }
   subscribe_operation(done);
 }
 
-void WorkerInfoAccessor::AsyncUnsubscribeFromWorkerFailure(const WorkerID &worker_id) {
+void WorkerInfoAccessor::AsyncUnsubscribeFromWorkerFailure(
+    const WorkerID &worker_id, std::optional<uint64_t> expected_generation) {
   {
     absl::MutexLock lock(&per_worker_mutex_);
-    per_worker_subscribe_operations_.erase(worker_id);
+    auto it = per_worker_subscribe_operations_.find(worker_id);
+    if (it == per_worker_subscribe_operations_.end()) {
+      return;
+    }
+    if (expected_generation.has_value() &&
+        it->second.generation != *expected_generation) {
+      // A newer subscribe won; leave it alone.
+      return;
+    }
+    per_worker_subscribe_operations_.erase(it);
   }
   client_impl_->GetGcsSubscriber().UnsubscribeWorkerFailure(worker_id);
+  // If a subscribe raced in after our erase and before Unsub completed, the
+  // pubsub Unsub may have torn down its callback — replay the lasting watch.
+  // The operation's pre-Sub generation check no-ops if it was superseded again.
+  SubscribeOperation newer_operation;
+  {
+    absl::MutexLock lock(&per_worker_mutex_);
+    auto it = per_worker_subscribe_operations_.find(worker_id);
+    if (it != per_worker_subscribe_operations_.end()) {
+      newer_operation = it->second.operation;
+    }
+  }
+  if (newer_operation != nullptr) {
+    newer_operation(nullptr);
+  }
 }
 
 void WorkerInfoAccessor::AsyncResubscribe() {
@@ -654,13 +743,15 @@ void WorkerInfoAccessor::AsyncResubscribe() {
   if (subscribe_operation_ != nullptr) {
     subscribe_operation_(nullptr);
   }
+  // Copy operations under the lock; invoke outside so Sub/reconcile never run
+  // while holding per_worker_mutex_. Each operation's generation check drops
+  // work that was unsubscribed or superseded after the copy.
   std::vector<SubscribeOperation> per_worker_operations;
   {
     absl::MutexLock lock(&per_worker_mutex_);
     per_worker_operations.reserve(per_worker_subscribe_operations_.size());
-    for (const std::pair<const WorkerID, SubscribeOperation> &entry :
-         per_worker_subscribe_operations_) {
-      per_worker_operations.push_back(entry.second);
+    for (const auto &entry : per_worker_subscribe_operations_) {
+      per_worker_operations.push_back(entry.second.operation);
     }
   }
   for (const SubscribeOperation &operation : per_worker_operations) {

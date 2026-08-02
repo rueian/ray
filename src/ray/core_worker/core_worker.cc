@@ -777,11 +777,14 @@ void CoreWorker::RegisterToGcs(int64_t worker_launch_time_ms,
 }
 
 void CoreWorker::SubscribeToOwnerWorkerFailure(const WorkerID &owner_worker_id) {
+  uint64_t generation = 0;
   {
     absl::MutexLock lock(&mutex_);
-    if (!subscribed_bp_owners_.insert(owner_worker_id).second) {
+    if (subscribed_bp_owners_.contains(owner_worker_id)) {
       return;
     }
+    generation = next_bp_owner_subscribe_generation_++;
+    subscribed_bp_owners_.emplace(owner_worker_id, generation);
   }
   // Watch for this owner's death so its streaming-generator tasks parked in
   // WaitUntilObjectConsumed / ReserveActorWideSlot get unblocked and finished
@@ -792,47 +795,97 @@ void CoreWorker::SubscribeToOwnerWorkerFailure(const WorkerID &owner_worker_id) 
   std::weak_ptr<CoreWorker> weak_self = weak_from_this();
   gcs_client_->Workers().AsyncSubscribeToWorkerFailure(
       owner_worker_id,
-      [weak_self, owner_worker_id](const rpc::WorkerDeltaData &) {
+      [weak_self, owner_worker_id, generation](const rpc::WorkerDeltaData &) {
+        // Bind generation so an in-flight death callback posted before
+        // Unsubscribe cannot tear down a newer resubscription (straggler
+        // Register after the first sweep). The newer generation's own
+        // liveness fetch still detects the dead owner.
         std::shared_ptr<CoreWorker> self = weak_self.lock();
         if (self != nullptr) {
-          self->HandleOwnerDied(owner_worker_id);
+          self->HandleOwnerDied(owner_worker_id, generation);
         }
       },
       /*done=*/
-      [weak_self, owner_worker_id](const Status &) {
+      [weak_self, owner_worker_id, generation](const Status &subscribe_status) {
         // The GCS does not replay messages published before the subscription
         // was established. If the owner died in that window no notification
         // will ever arrive, so fetch its liveness once to close the race.
+        // Also runs on AsyncResubscribe (accessor replays the captured done).
+        //
+        // Do not drop bookkeeping when subscribe_status is non-OK: command-batch
+        // failures usually mean the GCS publisher died, and AsyncResubscribe
+        // replays per_worker_subscribe_operations_. Releasing here would remove
+        // that replay entry and leave parked BP tasks unwatched.
         std::shared_ptr<CoreWorker> self = weak_self.lock();
         if (self == nullptr) {
           return;
         }
         self->gcs_client_->Workers().AsyncGet(
             owner_worker_id,
-            [weak_self, owner_worker_id](
+            [weak_self, owner_worker_id, generation, subscribe_status](
                 const Status &status,
                 const std::optional<rpc::WorkerTableData> &worker_data) {
-              if (!status.ok() || !worker_data.has_value() || worker_data->is_alive()) {
+              std::shared_ptr<CoreWorker> fetch_self = weak_self.lock();
+              if (fetch_self == nullptr) {
                 return;
               }
-              std::shared_ptr<CoreWorker> fetch_self = weak_self.lock();
-              if (fetch_self != nullptr) {
-                fetch_self->HandleOwnerDied(owner_worker_id);
+              if (!status.ok()) {
+                // Transient Get failure. Keep the subscription claim: if the
+                // subscribe succeeded, death notifications still work; if it
+                // failed, AsyncResubscribe will retry.
+                return;
+              }
+              const bool definitely_dead =
+                  worker_data.has_value() && !worker_data->is_alive();
+              // Alive workers are always in the table. A missing row after a
+              // successful subscribe means trimmed-after-death (or never
+              // registered). If subscribe failed, missing is ambiguous — keep
+              // bookkeeping for AsyncResubscribe rather than sweeping BP state.
+              const bool missing_after_successful_subscribe =
+                  !worker_data.has_value() && subscribe_status.ok();
+              if (definitely_dead || missing_after_successful_subscribe) {
+                fetch_self->HandleOwnerDied(owner_worker_id, generation);
               }
             });
-      });
+      },
+      /*subscription_generation=*/generation);
+  // HandleOwnerDied may have erased this generation between the claim insert
+  // above and the accessor map install inside AsyncSubscribe. Without this
+  // check we would leave an orphan keyed watch (death callbacks with no claim).
+  // Generation-scoped unsub is a no-op if a newer claim already replaced us.
+  {
+    absl::MutexLock lock(&mutex_);
+    auto it = subscribed_bp_owners_.find(owner_worker_id);
+    if (it != subscribed_bp_owners_.end() && it->second == generation) {
+      return;
+    }
+  }
+  gcs_client_->Workers().AsyncUnsubscribeFromWorkerFailure(owner_worker_id, generation);
 }
 
-void CoreWorker::HandleOwnerDied(const WorkerID &dead_owner) {
+void CoreWorker::HandleOwnerDied(const WorkerID &dead_owner,
+                                 std::optional<uint64_t> expected_generation) {
   // Snapshot affected entries under the lock; act on them after releasing.
   struct DeadOwnerEntry {
     std::shared_ptr<TaskGeneratorBackpressureWaiter> waiter;
     std::shared_ptr<ActorTaskBackpressureMetadata> actor_metadata;
   };
   std::vector<DeadOwnerEntry> dead_entries;
-  bool was_subscribed = false;
+  std::optional<uint64_t> generation_to_unsub;
   {
     absl::MutexLock lock(&mutex_);
+    auto it = subscribed_bp_owners_.find(dead_owner);
+    if (expected_generation.has_value()) {
+      if (it == subscribed_bp_owners_.end() || it->second != *expected_generation) {
+        // Stale liveness fetch from a subscription that was already replaced
+        // or torn down; leave the current generation alone.
+        return;
+      }
+    }
+    if (it != subscribed_bp_owners_.end()) {
+      generation_to_unsub = it->second;
+      subscribed_bp_owners_.erase(it);
+    }
     std::vector<ObjectID> to_erase;
     for (auto &[generator_id, state] : generator_backpressure_states_) {
       if (state.owner_worker_id == dead_owner) {
@@ -846,13 +899,13 @@ void CoreWorker::HandleOwnerDied(const WorkerID &dead_owner) {
     for (const auto &generator_id : to_erase) {
       generator_backpressure_states_.erase(generator_id);
     }
-    was_subscribed = subscribed_bp_owners_.erase(dead_owner) > 0;
   }
-  if (was_subscribed) {
-    // The owner is dead; its keyed subscription can never fire again. If a
-    // straggler task from this owner registers later, the resubscribe +
-    // liveness fetch in SubscribeToOwnerWorkerFailure re-detects the death.
-    gcs_client_->Workers().AsyncUnsubscribeFromWorkerFailure(dead_owner);
+  if (generation_to_unsub.has_value()) {
+    // Outside mutex_: generation-scoped unsub is a no-op if a straggler
+    // SubscribeToOwnerWorkerFailure already installed a newer watch. A
+    // concurrent Sub that lands during Unsub is restored by the accessor.
+    gcs_client_->Workers().AsyncUnsubscribeFromWorkerFailure(dead_owner,
+                                                             *generation_to_unsub);
   }
   for (auto &entry : dead_entries) {
     // Permanently disable per-task backpressure so the task can drain to its
@@ -3446,7 +3499,7 @@ void CoreWorker::RegisterGeneratorBackpressureState(
   // Any BP registration (per-task or actor-wide) needs owner-death sweeps:
   // running tasks parked in WaitUntilObjectConsumed / ReserveActorWideSlot
   // would otherwise hang, and finished actor-wide tasks would leak shared
-  // budget. call_once inside makes this cheap after the first registration.
+  // budget. Idempotent per owner after the first registration.
   SubscribeToOwnerWorkerFailure(WorkerID::FromBinary(owner_address.worker_id()));
 }
 

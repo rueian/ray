@@ -959,7 +959,12 @@ class CoreWorker : public std::enable_shared_from_this<CoreWorker> {
   /// so the actor-wide BP budget gets reclaimed when an owner worker dies without
   /// running TryDelObjectRefStream (the path that normally sends the teardown
   /// sentinel via UpdateGeneratorBackpressureConsumed).
-  void HandleOwnerDied(const WorkerID &dead_owner);
+  ///
+  /// If ``expected_generation`` is set, this is a no-op unless that generation is
+  /// still the active subscription for ``dead_owner``. Use it from async liveness
+  /// fetches so a stale fetch cannot unsubscribe a newer resubscription.
+  void HandleOwnerDied(const WorkerID &dead_owner,
+                       std::optional<uint64_t> expected_generation = std::nullopt);
 
   /// Implements gRPC server handler.
   /// If an executor can generator task return before the task is finished,
@@ -1583,9 +1588,10 @@ class CoreWorker : public std::enable_shared_from_this<CoreWorker> {
    * ``HandleOwnerDied`` can clean up generator backpressure state when that
    * owner dies. Covers both per-task BP (unblock ``WaitUntilObjectConsumed``)
    * and actor-wide BP (reclaim shared budget held by finished tasks). Called from
-   * ``RegisterGeneratorBackpressureState``; idempotent via ``std::call_once``.
+   * ``RegisterGeneratorBackpressureState``; idempotent per owner via
+   * ``subscribed_bp_owners_``.
    *
-   * the subscription is removed in ``HandleOwnerDied`` once the owner is dead.
+   * The subscription is removed in ``HandleOwnerDied`` once the owner is dead.
    * Must be called without holding ``mutex_``.
    */
   void SubscribeToOwnerWorkerFailure(const WorkerID &owner_worker_id);
@@ -2180,12 +2186,16 @@ class CoreWorker : public std::enable_shared_from_this<CoreWorker> {
   std::once_flag subscribe_to_node_changes_flag_;
 
   /// Owners whose worker-failure notifications this worker is subscribed to
-  /// for generator-backpressure cleanup. An owner is inserted on the first
-  /// backpressure registration for one of its generator tasks and erased in
-  /// HandleOwnerDied (a dead owner's keyed subscription is useless; live
-  /// owners stay subscribed so churning generator tasks don't
-  /// unsubscribe/resubscribe).
-  absl::flat_hash_set<WorkerID> subscribed_bp_owners_ ABSL_GUARDED_BY(mutex_);
+  /// for generator-backpressure cleanup, mapped to a monotonically increasing
+  /// subscription generation. An owner is inserted on the first backpressure
+  /// registration for one of its generator tasks and erased in HandleOwnerDied
+  /// (a dead owner's keyed subscription is useless; live owners stay
+  /// subscribed so churning generator tasks don't unsubscribe/resubscribe).
+  /// The generation lets a stale post-subscribe liveness fetch no-op after a
+  /// newer resubscription for the same owner.
+  absl::flat_hash_map<WorkerID, uint64_t> subscribed_bp_owners_ ABSL_GUARDED_BY(mutex_);
+  /// Next generation token for ``subscribed_bp_owners_``.
+  uint64_t next_bp_owner_subscribe_generation_ ABSL_GUARDED_BY(mutex_) = 1;
 
   // Grant CoreWorkerShutdownExecutor access to CoreWorker internals for orchestrating
   // the shutdown procedure without exposing additional public APIs.

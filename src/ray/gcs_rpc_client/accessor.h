@@ -437,15 +437,27 @@ class WorkerInfoAccessor {
   /// \param worker_id The worker whose failure to subscribe to.
   /// \param subscribe Callback that will be called when the worker fails.
   /// \param done Callback that will be called when subscription is complete.
+  /// \param subscription_generation Optional caller-assigned generation token.
+  ///        When set, ``AsyncUnsubscribeFromWorkerFailure`` with the same token
+  ///        is a no-op if a newer subscribe has replaced this one. When nullopt,
+  ///        an internal generation is assigned.
   virtual void AsyncSubscribeToWorkerFailure(
       const WorkerID &worker_id,
       const rpc::ItemCallback<rpc::WorkerDeltaData> &subscribe,
-      const rpc::StatusCallback &done);
+      const rpc::StatusCallback &done,
+      std::optional<uint64_t> subscription_generation = std::nullopt);
 
   /// Cancel a subscription made by AsyncSubscribeToWorkerFailure.
   ///
   /// \param worker_id The worker previously subscribed to.
-  virtual void AsyncUnsubscribeFromWorkerFailure(const WorkerID &worker_id);
+  /// \param expected_generation If set, erase/Unsub only when this generation
+  ///        is still the active keyed subscription. A mismatched (newer)
+  ///        generation is left intact. After a successful erase+Unsub, a
+  ///        subscribe that raced in is replayed so the lasting watch is
+  ///        restored without holding caller locks across pubsub.
+  virtual void AsyncUnsubscribeFromWorkerFailure(
+      const WorkerID &worker_id,
+      std::optional<uint64_t> expected_generation = std::nullopt);
 
   /// Report a worker failure to GCS asynchronously.
   ///
@@ -497,21 +509,36 @@ class WorkerInfoAccessor {
   /// PubSub server restart will cause GCS server restart. In this case, we need to
   /// resubscribe from PubSub server, otherwise we only need to fetch data from GCS
   /// server.
+  ///
+  /// For keyed worker-failure subscriptions, this also re-invokes each
+  /// subscription's original ``done`` callback so callers can re-run
+  /// post-subscribe logic (e.g. a liveness fetch) after the reconnect.
   virtual void AsyncResubscribe();
 
  private:
+  /// After queueing a keyed SubscribeWorkerFailure for ``generation``, Unsub if
+  /// the worker was concurrently unsubscribed, or if superseded replay the
+  /// current generation's subscribe (without Unsub, to avoid tearing down the
+  /// newer callback). Must be called without holding ``per_worker_mutex_``.
+  void ReconcileKeyedWorkerFailureSubscription(const WorkerID &worker_id,
+                                               uint64_t generation);
+
   /// Save the subscribe operation in this function, so we can call it again when GCS
   /// restarts from a failure.
   SubscribeOperation subscribe_operation_;
 
-  /// Guards the per-worker subscribe operations, which are mutated from
-  /// arbitrary threads (e.g. task execution threads registering generator
-  /// backpressure state) and read on GCS reconnection.
+  /// Guards the per-worker subscribe map only. Pubsub Sub/Unsub commands are
+  /// queued outside this lock; generations close races with unsubscribe.
   absl::Mutex per_worker_mutex_;
+  struct PerWorkerFailureSubscription {
+    uint64_t generation;
+    SubscribeOperation operation;
+  };
   /// Per-worker subscribe operations, kept so they can be replayed when GCS
   /// restarts from a failure. Keyed by the subscribed-to worker id.
-  absl::flat_hash_map<WorkerID, SubscribeOperation> per_worker_subscribe_operations_
-      ABSL_GUARDED_BY(per_worker_mutex_);
+  absl::flat_hash_map<WorkerID, PerWorkerFailureSubscription>
+      per_worker_subscribe_operations_ ABSL_GUARDED_BY(per_worker_mutex_);
+  uint64_t next_per_worker_subscribe_generation_ ABSL_GUARDED_BY(per_worker_mutex_) = 1;
 
   GcsClient *client_impl_;
 };
