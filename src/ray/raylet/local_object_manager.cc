@@ -84,14 +84,27 @@ void LocalObjectManager::PinObjectsAndWaitForFree(
       RAY_CHECK(msg.has_worker_object_eviction_message());
       const auto &object_eviction_msg = msg.worker_object_eviction_message();
       const auto obj_id = ObjectID::FromBinary(object_eviction_msg.object_id());
+      // experiment: free on the owner's eviction message, as before ce4ccecfe3.
+      absl::flat_hash_map<ObjectID, LocalObjectInfo>::iterator local_it =
+          local_objects_.find(obj_id);
+      if (local_it != local_objects_.end() && !local_it->second.is_freed_) {
+        ReleaseFreedLocalObject(obj_id);
+      }
       core_worker_subscriber_->Unsubscribe(
           rpc::ChannelType::WORKER_OBJECT_EVICTION, owner_address, obj_id.Binary());
     };
 
     // Callback that is invoked when the owner of the object id is dead.
-    // TODO(#63181) will delete pubsub and update testing
-    auto owner_dead_callback = [owner_address](const std::string &object_id_binary,
-                                               const Status &) {};
+    // experiment: free when the owner dies, as before ce4ccecfe3.
+    auto owner_dead_callback = [this, owner_address](const std::string &object_id_binary,
+                                                     const Status &) {
+      const ObjectID obj_id = ObjectID::FromBinary(object_id_binary);
+      absl::flat_hash_map<ObjectID, LocalObjectInfo>::iterator local_it =
+          local_objects_.find(obj_id);
+      if (local_it != local_objects_.end() && !local_it->second.is_freed_) {
+        ReleaseFreedLocalObject(obj_id);
+      }
+    };
 
     auto sub_message = std::make_unique<rpc::SubMessage>();
     *sub_message->mutable_worker_object_eviction_message() = std::move(wait_request);
