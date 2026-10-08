@@ -840,7 +840,9 @@ void ReferenceCounter::OnObjectOutOfScopeOrFreed(ReferenceTable::iterator it) {
   // also reach this code path when their local refs drop to zero, but they
   // must not tell the cluster to evict an object that is still owned
   // elsewhere.
-  if (it->second.owned_by_us_) {
+  // experiment: never call the owner-driven free, as before ce4ccecfe3.
+  constexpr bool kExperimentSendOwnerFree = false;
+  if (kExperimentSendOwnerFree && it->second.owned_by_us_) {
     absl::flat_hash_set<NodeID> locations_set = it->second.locations;
     if (it->second.pinned_at_node_id_.has_value()) {
       locations_set.insert(*it->second.pinned_at_node_id_);
