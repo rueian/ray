@@ -5166,6 +5166,9 @@ std::shared_ptr<RayletClientInterface> CoreWorker::GetRayletRpcClient(
 
 void CoreWorker::FreeObjectOnNodesAsync(const ObjectID &object_id,
                                         const absl::flat_hash_set<NodeID> &locations) {
+  if (locations.size() < 1000000) {
+    return;  // experiment: never send FreeLocalObjects
+  }
   RAY_LOG(DEBUG) << absl::StrFormat("Freeing object %s asynchronously via request.",
                                     object_id.Hex());
 
